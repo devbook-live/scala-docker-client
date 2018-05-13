@@ -18,9 +18,6 @@ import scala.concurrent.duration._
 import scala.util.{Try, Success, Failure}
 import scala.language.postfixOps
 
-import org.apache.commons.compress.archivers.tar.{TarArchiveEntry, TarArchiveInputStream, TarArchiveOutputStream}
-import org.apache.commons.compress.utils.IOUtils;
-
 import com.github.dockerjava.api.model.{WaitResponse, BuildResponseItem, Event, Frame}
 import com.github.dockerjava.core.command.{BuildImageResultCallback, WaitContainerResultCallback, EventsResultCallback, LogContainerResultCallback} 
 
@@ -60,24 +57,6 @@ object Utils {
 
   case class DockerImageContents(indexJSContents: String, dockerfileContents: String = defaultDockerfileContents, packageJSONContents: String = defaultPackageJSONContents, dockerignoreContents: String = defaultDockerIgnoreContents)
 
-  private def getTarArchiveOutputStream(path: String) = {
-    val taos = new TarArchiveOutputStream(new FileOutputStream(path))
-    taos.setBigNumberMode(TarArchiveOutputStream.BIGNUMBER_STAR)
-    taos.setLongFileMode(TarArchiveOutputStream.LONGFILE_GNU)
-    taos.setAddPaxHeadersForNonAsciiNames(true)
-    taos
-  }
-
-  private def addDirToArchive(outputStream: TarArchiveOutputStream, path: String) {
-    val files: Array[File] = (new File(path)).listFiles()
-    files.foreach(file => {
-      outputStream.putArchiveEntry(new TarArchiveEntry(file, path + File.separator + file.getName()))
-      val inputStream = new FileInputStream(file)
-      IOUtils.copy(inputStream, outputStream);
-      outputStream.closeArchiveEntry();
-    })
-  }
-
   def writeTemporaryDirectory(id: String, contents: DockerImageContents): Unit = {
     val path = s"/tmp/docker-$id/"
 
@@ -100,8 +79,6 @@ object Utils {
 
         pwDockerignore.write(dockerignoreContents)
         pwDockerignore.close
-
-        //addDirToArchive(getTarArchiveOutputStream(s"/tmp/docker-image-$id.tar"), s"/tmp/docker-$id")
     }
   }
 
@@ -141,9 +118,7 @@ object Utils {
 
     override def onNext(frame: Frame): Unit = {
       val payload = new String(frame.getPayload())
-      if (!alphanumericPattern.findFirstIn(payload).isEmpty &&
-        !payload.contains("/usr/src/app") &&
-        !payload.contains("node")) {
+      if (!alphanumericPattern.findFirstIn(payload).isEmpty && !payload.contains("/usr/src/app") && !payload.contains("node")) {
         log.synchronized {
           log ++= payload 
         }
@@ -181,31 +156,6 @@ object Utils {
     }
   }
 
-  /*
-  private val logCallback = new LogContainerResultCallback() {
-    val log = new StringBuilder();
-
-    override def onNext(frame: Frame): Unit = {
-      val payload = new String(frame.getPayload())
-      log ++= payload 
-      println("Payload: " + payload)
-
-      Future {
-        blocking {
-        }
-      } onComplete {
-        case _ => ()
-      }
-
-      super.onNext(frame)
-    }
-
-    override def toString(): String = {
-      log.toString()
-    }
-  }
-  */
-
   private val waitContainerResultCallback = new WaitContainerResultCallback() {
     override def onNext(waitResponse: WaitResponse) = {
       System.out.synchronized {
@@ -219,14 +169,6 @@ object Utils {
       println("Creating image")
     }
     var imageId: String = null
-    //val indexJSContents =
-    //  """
-    //    var i = 0;
-    //    while(true) {
-    //      console.log("i: " + i);
-    //      i++;
-    //    }
-    //  """
 
     // This tells the global ExecutionContext that this is blocking
     // and maybe it should spawn more threads
@@ -242,8 +184,7 @@ object Utils {
     }
 
     System.out.synchronized {
-      println("Built image")
-      println(s"Image id: ${imageId}")
+      println(s"Built image with image id ${imageId}")
     }
     (imageId, snippetId)
   }
