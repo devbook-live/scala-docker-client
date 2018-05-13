@@ -108,7 +108,9 @@ object Utils {
   private def logEvents = {
     val eventsCallback = new EventsResultCallback() {
       override def onNext(event: Event) {
-        println(s"Event: ${event}")
+        System.out.synchronized {
+          println(s"Event: ${event}")
+        }
         // Call parent class' onNext method with event
         super.onNext(event)
       }
@@ -117,7 +119,10 @@ object Utils {
     Future {
       dockerClient.eventsCmd().exec(eventsCallback).awaitCompletion().close()
     } onComplete {
-      case _ => println("Completed event logging")
+      case _ => 
+        System.out.synchronized {
+          println("Completed event logging")
+        }
     }
   }
 
@@ -128,29 +133,51 @@ object Utils {
     }
   }
 
+  private val alphanumericPattern = "[a-zA-Z0-9]+".r
+
   private class MyLogContainerResultCallback(snipId: String) extends LogContainerResultCallback {
     private val snippetId = snipId
     val log = new StringBuilder();
 
     override def onNext(frame: Frame): Unit = {
       val payload = new String(frame.getPayload())
-      log ++= payload 
-      println("Payload: " + payload)
-
-      Future {
-        blocking {
-          db.collection("snippetOutputs").document(snippetId).set(Map[String, Object]("output" -> log.toString()).asJava)
+      if (!alphanumericPattern.findFirstIn(payload).isEmpty &&
+        !payload.contains("/usr/src/app") &&
+        !payload.contains("node")) {
+        log.synchronized {
+          log ++= payload 
         }
-      } onComplete {
-        case Success(_) => println(s"Updated output for snippet $snippetId.")
-        case Failure(_) => println(s"Failed to update output for snippet $snippetId.")
+
+        Future {
+          blocking {
+            log.synchronized {
+              db.collection("snippetOutputs").document(snippetId).set(Map[String, Object]("output" -> log.toString()).asJava)
+            }
+          }
+        } onComplete {
+          case Success(_) =>
+            System.out.synchronized {
+              println(s"Updated output for snippet $snippetId.")
+            }
+          case Failure(_) =>
+            System.out.synchronized {
+              println(s"Failed to update output for snippet $snippetId.")
+            }
+        }
+      }
+
+      System.out.synchronized {
+        println("Payload: " + payload)
       }
 
       super.onNext(frame)
+
     }
 
     override def toString(): String = {
-      log.toString()
+      log.synchronized {
+        log.toString()
+      }
     }
   }
 
@@ -181,12 +208,16 @@ object Utils {
 
   private val waitContainerResultCallback = new WaitContainerResultCallback() {
     override def onNext(waitResponse: WaitResponse) = {
-      println("Wait response: " + waitResponse.toString())
+      System.out.synchronized {
+        println("Wait response: " + waitResponse.toString())
+      }
     }
   }
 
   def createImage(snippetId: String, indexJSContents: String): (String, String) = {
-    println("Creating image")
+    System.out.synchronized {
+      println("Creating image")
+    }
     var imageId: String = null
     //val indexJSContents =
     //  """
@@ -210,13 +241,17 @@ object Utils {
       imageId = dockerClient.buildImageCmd(baseDir).exec(buildImageCallback).awaitImageId()
     }
 
-    println("Built image")
-    println(s"Image id: ${imageId}")
+    System.out.synchronized {
+      println("Built image")
+      println(s"Image id: ${imageId}")
+    }
     (imageId, snippetId)
   }
 
   def createAndRunContainer(imageId: String, snippetId: String): Unit = {
-    println("Creating container")
+    System.out.synchronized {
+      println("Creating container")
+    }
     val container = dockerClient.createContainerCmd(imageId)
       .withCmd("npm", "start")
       .exec()
@@ -234,13 +269,27 @@ object Utils {
         Thread.sleep(15 * 1000)
         // Forcefully remove the container and then remove the image
         Try(dockerClient.removeContainerCmd(containerId).withForce(true).exec()) match {
-          case Success(_) => println(s"Successfully removed container $containerId")
-          case Failure(_) => println(s"Failed to remove container $containerId")
+          case Success(_) => 
+            System.out.synchronized {
+              println(s"Successfully removed container $containerId")
+            }
+          case Failure(_) =>
+            System.out.synchronized {
+              println(s"Failed to remove container $containerId")
+            }
         }
+        /*
         Try(dockerClient.removeImageCmd(imageId).exec()) match {
-          case Success(_) => println(s"Successfully removed image $imageId")
-          case Failure(_) => println(s"Failed to remove image $imageId")
+          case Success(_) => 
+            System.out.synchronized {
+              println(s"Successfully removed image $imageId")
+            }
+          case Failure(_) =>
+            System.out.synchronized {
+              println(s"Failed to remove image $imageId")
+            }
         }
+        */
       }
     } onComplete {
       case _ => ()
@@ -254,6 +303,7 @@ object Utils {
         .withTailAll()
         .exec(new MyLogContainerResultCallback(snippetId))
         .awaitCompletion()
+        .close()
     }
 
     dockerClient.waitContainerCmd(containerId).exec(waitContainerResultCallback)
@@ -266,7 +316,15 @@ object Utils {
           createAndRunContainer(imageId, snippetId)
       }
     } onComplete {
-      case _ => println(s"Finished running $id.")
+      case Success(_) => 
+        System.out.synchronized {
+          println(s"Finished running $id.")
+        }
+      case Failure(err) => 
+        System.out.synchronized {
+          println(s"Error running $id.")
+          println(s"Error: $err")
+        }
     }
   }
 
@@ -283,8 +341,14 @@ object Utils {
           // Option.getOrElse() is one of the things I can do to get the value
           val containerId = snippetIdToContainerId.get(snippetId).getOrElse(null)
           Try(dockerClient.removeContainerCmd(containerId).withForce(true).exec()) match {
-            case Success(_) => println(s"Successfully removed container $containerId")
-            case Failure(_) => println(s"Failed to remove container $containerId")
+            case Success(_) =>
+              System.out.synchronized {
+                println(s"Successfully removed container $containerId")
+              }
+            case Failure(_) =>
+              System.out.synchronized {
+                println(s"Failed to remove container $containerId")
+              }
           }
         }
 
@@ -307,9 +371,13 @@ object Utils {
         // Option(5) == Some(5)
         Option(e) match {
           case Some(e) =>
-            System.err.println(s"Listen failed: $e")
+            System.err.synchronized {
+              System.err.println(s"Listen failed: $e")
+            }
           case None =>
-            println(s"Received query snapshot of size ${snapshots.size}");
+            System.out.synchronized {
+              println(s"Received query snapshot of size ${snapshots.size}");
+            }
             snapshots.forEach(new Consumer[QueryDocumentSnapshot]() {
               override def accept(arg: QueryDocumentSnapshot) = {
                 querySnapshotCallback.apply(arg)
