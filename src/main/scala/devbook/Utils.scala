@@ -201,8 +201,14 @@ object Utils {
     }
 
     dockerClient.waitContainerCmd(container.getId()).exec(waitContainerResultCallback)
-    println("Printing log callback...")
   }
 
-
+  def createImageAndRunContainer(id: String): Unit = {
+    Future {
+      val imageId = createImage(id)
+      createAndRunContainer(imageId)
+    } onComplete {
+      case _ => println(s"Finished running $id.")
+    }
+  }
 }

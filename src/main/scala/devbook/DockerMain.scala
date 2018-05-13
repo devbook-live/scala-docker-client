@@ -1,6 +1,7 @@
 package DevBook 
 
 import DevBook.Utils._
+import DevBook.FirebaseService.db
 
 import java.io.File
 
@@ -13,15 +14,6 @@ object DockerMain {
   var flag: Boolean = false
 
   def main(args: Array[String]): Unit = {
-    Future {
-      val id = "oogabooga";
-
-      val imageId = createImage(id)
-      createAndRunContainer(imageId)
-    } onComplete {
-      case _ => println("Image creation done!")
-    }
-
     lock.synchronized {
       try {
         while (flag == false) lock.wait()
