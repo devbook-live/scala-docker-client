@@ -6,7 +6,7 @@ import java.io._
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable.{ListBuffer, StringBuilder}
-import scala.concurrent.{Future, Await}
+import scala.concurrent.{Future, Await, blocking}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration._
 import scala.util.{Try, Success, Failure}
@@ -28,7 +28,8 @@ object Utils {
     """;
 
   val defaultPackageJSONContents =
-    """{
+    """
+    {
       "name": "defaultName",
       "version": "1.0.0",
       "description": "",
@@ -37,11 +38,14 @@ object Utils {
       "scripts": {
         "start": "node index.js"
       }
-    }"""
+    }
+    """
 
   val defaultDockerIgnoreContents =
-    """node_modules
-    npm-debug.log"""
+    """
+    node_modules
+    npm-debug.log
+    """
 
   case class DockerImageContents(indexJSContents: String, dockerfileContents: String = defaultDockerfileContents, packageJSONContents: String = defaultPackageJSONContents, dockerignoreContents: String = defaultDockerIgnoreContents)
 
@@ -119,7 +123,9 @@ object Utils {
     val log = new StringBuilder();
 
     override def onNext(frame: Frame): Unit = {
-      log ++= new String(frame.getPayload())
+      val payload = new String(frame.getPayload())
+      log ++= payload 
+      println("Payload: " + payload)
       super.onNext(frame)
     }
 
@@ -136,10 +142,29 @@ object Utils {
 
   def createImage(id: String): String = {
     println("Creating image")
-    Await.result(writeTemporaryDirectory(id, DockerImageContents("console.log('Hello World!');")), timeout)
-    println("Created image")
-    val baseDir = new java.io.File(s"/tmp/docker-$id/")
-    val imageId = dockerClient.buildImageCmd(baseDir).exec(buildImageCallback).awaitImageId()
+    var imageId: String = null
+    val indexJSContents =
+      """
+        var i = 0;
+        while(true) {
+          console.log("i: " + i);
+          i++;
+        }
+      """
+
+    // This tells the global ExecutionContext that this is blocking
+    // and maybe it should spawn more threads
+    // https://stackoverflow.com/a/19682155
+    // An ExecutionContext is something that keeps a pool of threads
+    // and it grabs tasks from a worker queue and assigns threads to
+    // tasks it takes off the queue; it basically allows reuse of
+    // threads because thread creation is very expensive
+    blocking {
+      Await.result(writeTemporaryDirectory(id, DockerImageContents(indexJSContents)), timeout)
+      val baseDir = new java.io.File(s"/tmp/docker-$id/")
+      imageId = dockerClient.buildImageCmd(baseDir).exec(buildImageCallback).awaitImageId()
+    }
+
     println("Built image")
     println(s"Image id: ${imageId}")
     imageId
@@ -153,17 +178,30 @@ object Utils {
 
     dockerClient.startContainerCmd(container.getId()).exec()
 
-    dockerClient.logContainerCmd(container.getId())
-      .withStdErr(true)
-      .withStdOut(true)
-      .withFollowStream(true)
-      .withTailAll()
-      .exec(logCallback)
-      .awaitCompletion()
+    Future {
+      blocking {
+        // Wait for 15 seconds
+        Thread.sleep(15 * 1000)
+        // Forcefully remove the container and then remove the image
+        dockerClient.removeContainerCmd(container.getId()).withForce(true).exec()
+        dockerClient.removeImageCmd(imageId).exec()
+      }
+    } onComplete {
+      case _ => ()
+    }
+
+    blocking {
+      dockerClient.logContainerCmd(container.getId())
+        .withStdErr(true)
+        .withStdOut(true)
+        .withFollowStream(true)
+        .withTailAll()
+        .exec(logCallback)
+        .awaitCompletion()
+    }
 
     dockerClient.waitContainerCmd(container.getId()).exec(waitContainerResultCallback)
     println("Printing log callback...")
-    println(logCallback.toString())
   }
 
 

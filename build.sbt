@@ -40,7 +40,10 @@ libraryDependencies ++= Seq(
   //"ch.qos.logback" % "logback-classic" % logbackVer,
   //"org.almoehi" %% "reactive-docker" % "0.1-SNAPSHOT"
   "com.github.docker-java" % "docker-java" % "3.1.0-rc-3",
-  "javax.annotation" % "javax.annotation-api" % "1.3.2"
+  "javax.annotation" % "javax.annotation-api" % "1.3.2",
+  "com.google.firebase" % "firebase-admin" % "6.0.0",
+  "com.google.apis" % "google-api-services-oauth2" % "v2-rev137-1.23.0",
+  "com.google.cloud" % "google-cloud-firestore" % "0.47.0-beta"
 )
 
 fork := true
