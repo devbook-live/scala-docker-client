@@ -7,7 +7,7 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 
 object FirebaseService {
-  private val serviceAccount = new FileInputStream(System.getProperty("user.dir") + "/serviceAccount.json")
+  private val serviceAccount = new FileInputStream(System.getProperty("user.dir") + "/serviceAccountKey.json")
   private val credentials = GoogleCredentials.fromStream(serviceAccount)
   private val options = new FirebaseOptions.Builder()
     .setCredentials(credentials)

@@ -1,14 +1,20 @@
 package DevBook
 
 import DevBook.DockerContext._
+import DevBook.FirebaseService._
 
 import java.io._
+import java.util.concurrent.ConcurrentHashMap
+import java.util.function.Consumer
 
 import scala.collection.JavaConverters._
+import scala.collection.concurrent.{Map => ConcurrentMap}
 import scala.collection.mutable.{ListBuffer, StringBuilder}
+
 import scala.concurrent.{Future, Await, blocking}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration._
+
 import scala.util.{Try, Success, Failure}
 import scala.language.postfixOps
 
@@ -18,7 +24,12 @@ import org.apache.commons.compress.utils.IOUtils;
 import com.github.dockerjava.api.model.{WaitResponse, BuildResponseItem, Event, Frame}
 import com.github.dockerjava.core.command.{BuildImageResultCallback, WaitContainerResultCallback, EventsResultCallback, LogContainerResultCallback} 
 
+import com.google.cloud.firestore.{ListenerRegistration, EventListener, FirestoreException, QuerySnapshot, QueryDocumentSnapshot}
+
 object Utils {
+  private[DevBook] val snippetIdToContainerId: ConcurrentMap[String, String] = new ConcurrentHashMap[String, String]().asScala
+  var listenerRegistration: ListenerRegistration = null
+
   val defaultDockerfileContents =
     """
     FROM node:carbon
@@ -67,32 +78,30 @@ object Utils {
     })
   }
 
-  def writeTemporaryDirectory(id: String, contents: DockerImageContents): Future[Unit] = {
+  def writeTemporaryDirectory(id: String, contents: DockerImageContents): Unit = {
     val path = s"/tmp/docker-$id/"
 
-    Future {
-      val createdDir = new File(path).mkdirs()
-      val pwIndexJS = new PrintWriter(path + "index.js")
-      val pwDockerfile = new PrintWriter(path + "Dockerfile")
-      val pwPackageJSON = new PrintWriter(path + "package.json")
-      val pwDockerignore = new PrintWriter(path + ".dockerignore")
+    val createdDir = new File(path).mkdirs()
+    val pwIndexJS = new PrintWriter(path + "index.js")
+    val pwDockerfile = new PrintWriter(path + "Dockerfile")
+    val pwPackageJSON = new PrintWriter(path + "package.json")
+    val pwDockerignore = new PrintWriter(path + ".dockerignore")
 
-      contents match {
-        case DockerImageContents(indexJSContents, dockerfileContents, packageJSONContents, dockerignoreContents) =>
-          pwIndexJS.write(indexJSContents)
-          pwIndexJS.close
+    contents match {
+      case DockerImageContents(indexJSContents, dockerfileContents, packageJSONContents, dockerignoreContents) =>
+        pwIndexJS.write(indexJSContents)
+        pwIndexJS.close
 
-          pwDockerfile.write(dockerfileContents)
-          pwDockerfile.close
+        pwDockerfile.write(dockerfileContents)
+        pwDockerfile.close
 
-          pwPackageJSON.write(packageJSONContents)
-          pwPackageJSON.close
+        pwPackageJSON.write(packageJSONContents)
+        pwPackageJSON.close
 
-          pwDockerignore.write(dockerignoreContents)
-          pwDockerignore.close
+        pwDockerignore.write(dockerignoreContents)
+        pwDockerignore.close
 
-          //addDirToArchive(getTarArchiveOutputStream(s"/tmp/docker-image-$id.tar"), s"/tmp/docker-$id")
-      }
+        //addDirToArchive(getTarArchiveOutputStream(s"/tmp/docker-image-$id.tar"), s"/tmp/docker-$id")
     }
   }
 
@@ -119,13 +128,24 @@ object Utils {
     }
   }
 
-  private val logCallback = new LogContainerResultCallback() {
+  private class MyLogContainerResultCallback(snipId: String) extends LogContainerResultCallback {
+    private val snippetId = snipId
     val log = new StringBuilder();
 
     override def onNext(frame: Frame): Unit = {
       val payload = new String(frame.getPayload())
       log ++= payload 
       println("Payload: " + payload)
+
+      Future {
+        blocking {
+          db.collection("snippetOutputs").document(snippetId).set(Map[String, Object]("output" -> log.toString()).asJava)
+        }
+      } onComplete {
+        case Success(_) => println(s"Updated output for snippet $snippetId.")
+        case Failure(_) => println(s"Failed to update output for snippet $snippetId.")
+      }
+
       super.onNext(frame)
     }
 
@@ -134,23 +154,48 @@ object Utils {
     }
   }
 
+  /*
+  private val logCallback = new LogContainerResultCallback() {
+    val log = new StringBuilder();
+
+    override def onNext(frame: Frame): Unit = {
+      val payload = new String(frame.getPayload())
+      log ++= payload 
+      println("Payload: " + payload)
+
+      Future {
+        blocking {
+        }
+      } onComplete {
+        case _ => ()
+      }
+
+      super.onNext(frame)
+    }
+
+    override def toString(): String = {
+      log.toString()
+    }
+  }
+  */
+
   private val waitContainerResultCallback = new WaitContainerResultCallback() {
     override def onNext(waitResponse: WaitResponse) = {
       println("Wait response: " + waitResponse.toString())
     }
   }
 
-  def createImage(id: String): String = {
+  def createImage(snippetId: String, indexJSContents: String): (String, String) = {
     println("Creating image")
     var imageId: String = null
-    val indexJSContents =
-      """
-        var i = 0;
-        while(true) {
-          console.log("i: " + i);
-          i++;
-        }
-      """
+    //val indexJSContents =
+    //  """
+    //    var i = 0;
+    //    while(true) {
+    //      console.log("i: " + i);
+    //      i++;
+    //    }
+    //  """
 
     // This tells the global ExecutionContext that this is blocking
     // and maybe it should spawn more threads
@@ -160,55 +205,124 @@ object Utils {
     // tasks it takes off the queue; it basically allows reuse of
     // threads because thread creation is very expensive
     blocking {
-      Await.result(writeTemporaryDirectory(id, DockerImageContents(indexJSContents)), timeout)
-      val baseDir = new java.io.File(s"/tmp/docker-$id/")
+      writeTemporaryDirectory(snippetId, DockerImageContents(indexJSContents))
+      val baseDir = new java.io.File(s"/tmp/docker-$snippetId/")
       imageId = dockerClient.buildImageCmd(baseDir).exec(buildImageCallback).awaitImageId()
     }
 
     println("Built image")
     println(s"Image id: ${imageId}")
-    imageId
+    (imageId, snippetId)
   }
 
-  def createAndRunContainer(imageId: String): Unit = {
+  def createAndRunContainer(imageId: String, snippetId: String): Unit = {
     println("Creating container")
     val container = dockerClient.createContainerCmd(imageId)
       .withCmd("npm", "start")
       .exec()
+    
+    val containerId = container.getId()
 
-    dockerClient.startContainerCmd(container.getId()).exec()
+    snippetIdToContainerId.putIfAbsent(snippetId, containerId)
 
+    dockerClient.startContainerCmd(containerId).exec()
+
+    // Separate task to kill container
     Future {
       blocking {
         // Wait for 15 seconds
         Thread.sleep(15 * 1000)
         // Forcefully remove the container and then remove the image
-        dockerClient.removeContainerCmd(container.getId()).withForce(true).exec()
-        dockerClient.removeImageCmd(imageId).exec()
+        Try(dockerClient.removeContainerCmd(containerId).withForce(true).exec()) match {
+          case Success(_) => println(s"Successfully removed container $containerId")
+          case Failure(_) => println(s"Failed to remove container $containerId")
+        }
+        Try(dockerClient.removeImageCmd(imageId).exec()) match {
+          case Success(_) => println(s"Successfully removed image $imageId")
+          case Failure(_) => println(s"Failed to remove image $imageId")
+        }
       }
     } onComplete {
       case _ => ()
     }
 
     blocking {
-      dockerClient.logContainerCmd(container.getId())
+      dockerClient.logContainerCmd(containerId)
         .withStdErr(true)
         .withStdOut(true)
         .withFollowStream(true)
         .withTailAll()
-        .exec(logCallback)
+        .exec(new MyLogContainerResultCallback(snippetId))
         .awaitCompletion()
     }
 
-    dockerClient.waitContainerCmd(container.getId()).exec(waitContainerResultCallback)
+    dockerClient.waitContainerCmd(containerId).exec(waitContainerResultCallback)
   }
 
-  def createImageAndRunContainer(id: String): Unit = {
+  def createImageAndRunContainer(id: String, indexJSContents: String): Unit = {
     Future {
-      val imageId = createImage(id)
-      createAndRunContainer(imageId)
+      createImage(id, indexJSContents) match {
+        case (imageId, snippetId) =>
+          createAndRunContainer(imageId, snippetId)
+      }
     } onComplete {
       case _ => println(s"Finished running $id.")
     }
   }
+
+  val querySnapshotCallback =
+    (doc: QueryDocumentSnapshot) => {
+      val snippetId = doc.getId()
+      // Assuming a snippet has some text
+      // Check if we've seen this snippet before
+      // If not, create the image first and then run container
+      // Otherwise just restart the container
+      Option(doc.get("text")).foreach(indexJSContents => {
+        if (snippetIdToContainerId.contains(snippetId)) {
+          // So concurrent.Map.get() returns an Option so I have to do something to get the value
+          // Option.getOrElse() is one of the things I can do to get the value
+          val containerId = snippetIdToContainerId.get(snippetId).getOrElse(null)
+          Try(dockerClient.removeContainerCmd(containerId).withForce(true).exec()) match {
+            case Success(_) => println(s"Successfully removed container $containerId")
+            case Failure(_) => println(s"Failed to remove container $containerId")
+          }
+        }
+
+        createImageAndRunContainer(snippetId, indexJSContents.toString)
+      })
+    }
+
+  // Lot of code here for the event listener callback
+  // But basically it's mostly error handling
+  val eventListenerCallback =
+    new EventListener[QuerySnapshot]() {
+      override def onEvent(snapshots: QuerySnapshot, e: FirestoreException) = {
+        // Option is a special type in Scala
+        // It is a 1-element collection which
+        // means that foreach, map, etc. work
+        // And they only do anything if there's
+        // some value
+        //
+        // Option(null) == None
+        // Option(5) == Some(5)
+        Option(e) match {
+          case Some(e) =>
+            System.err.println(s"Listen failed: $e")
+          case None =>
+            println(s"Received query snapshot of size ${snapshots.size}");
+            snapshots.forEach(new Consumer[QueryDocumentSnapshot]() {
+              override def accept(arg: QueryDocumentSnapshot) = {
+                querySnapshotCallback.apply(arg)
+              }
+            })
+        }
+      }
+    }
+
+  def snippetsSubscribe() = {
+      listenerRegistration = db.collection("snippets").whereEqualTo("running", true)
+        .addSnapshotListener(eventListenerCallback)
+  }
+
+
 }

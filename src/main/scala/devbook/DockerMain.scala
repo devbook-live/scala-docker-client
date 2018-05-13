@@ -14,6 +14,8 @@ object DockerMain {
   var flag: Boolean = false
 
   def main(args: Array[String]): Unit = {
+    snippetsSubscribe()
+
     lock.synchronized {
       try {
         while (flag == false) lock.wait()
