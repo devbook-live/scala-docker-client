@@ -29,6 +29,8 @@ object Utils {
 
   private var listenerRegistration: ListenerRegistration = null
 
+  private val imageIdHolder = new StringBuilder()
+
   val defaultDockerfileContents =
     """
     FROM node:carbon
@@ -81,7 +83,21 @@ object Utils {
 
     contents match {
       case DockerImageContents(indexJSContents, dockerfileContents, packageJSONContents, dockerignoreContents) =>
-        pwIndexJS.write(indexJSContents)
+        val padding1 = new StringBuilder();
+        val padding2 = new StringBuilder();
+
+        //for (_ <- 1 to 5) padding1 ++= " /* " + scala.util.Random.alphanumeric.take(20).mkString + " */ \n"
+        padding1 ++= "function thisRandomRandomRandomFunc() { "
+        padding1 ++= scala.util.Random.nextInt().toString() + " + " + scala.util.Random.nextInt().toString()
+        padding1 ++= " } \n\n"
+
+        for (_ <- 1 to 5) padding2 ++= " /* " + scala.util.Random.alphanumeric.take(20).mkString + " */ \n"
+
+        val newIndexJSContents: String = padding1.toString() + indexJSContents + padding2.toString()
+        println("Contents")
+        println(newIndexJSContents)
+
+        pwIndexJS.write(newIndexJSContents)
         pwIndexJS.close
 
         pwDockerfile.write(dockerfileContents.replace("/usr/src/app", path))
@@ -99,7 +115,14 @@ object Utils {
 
   private val buildImageCallback = new BuildImageResultCallback() {
     override def onNext(item: BuildResponseItem) = {
-      synchronizedPrintln(s"BuildImageResultCallback: ${item.getStream()}")
+      val payload = item.getStream()
+      if (payload.contains("Successfully built")) {
+        imageIdHolder.synchronized {
+          imageIdHolder ++= payload.substring(19)
+          imageIdHolder.notifyAll()
+        }
+      }
+      synchronizedPrintln(s"BuildImageResultCallback: ${payload}")
       super.onNext(item)
     }
   }
@@ -176,10 +199,21 @@ object Utils {
     // tasks it takes off the queue; it basically allows reuse of
     // threads because thread creation is very expensive
     blocking {
+      imageIdHolder.synchronized {
+        imageIdHolder.clear()
+      }
+
       val path = writeTemporaryDirectory(snippetId, DockerImageContents(indexJSContents))
       //val baseDir = new java.io.File(s"/tmp/docker-$snippetId/")
       val baseDir = new java.io.File(path)
       imageId = dockerClient.buildImageCmd(baseDir).exec(buildImageCallback).awaitImageId()
+
+      imageIdHolder.synchronized {
+        while (imageIdHolder.isEmpty) {
+          imageIdHolder.wait()
+        }
+        imageId = imageIdHolder.toString().trim()
+      }
     }
 
     synchronizedPrintln(s"Built image with image id ${imageId}")
@@ -207,7 +241,7 @@ object Utils {
     Future {
       blocking {
         // Wait for 15 seconds
-        Thread.sleep(15 * 1000)
+        Thread.sleep(5 * 1000)
         // Forcefully remove the container and then remove the image
         Try(dockerClient.removeContainerCmd(containerId).withForce(true).exec()) match {
           case Success(_) => 
@@ -216,6 +250,16 @@ object Utils {
             synchronizedPrintln(s"Successfully removed container $containerId")
           case Failure(_) =>
             synchronizedPrintln(s"Failed to remove container $containerId")
+        }
+        Try(dockerClient.removeImageCmd(imageId).exec()) match {
+          case Success(_) => 
+            System.out.synchronized {
+              println(s"Successfully removed image $imageId")
+            }
+          case Failure(_) =>
+            System.out.synchronized {
+              println(s"Failed to remove image $imageId")
+            }
         }
       }
     } onComplete {

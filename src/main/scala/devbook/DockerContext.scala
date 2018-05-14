@@ -29,6 +29,13 @@ object DockerContext {
     } else {
       "unix:///var/run/docker.sock"
     }
-  implicit lazy val dockerClient = DockerClientBuilder.getInstance(serverAddress).build();
+
+
+  val config = DefaultDockerClientConfig.createDefaultConfigBuilder()
+    .withDockerHost(serverAddress)
+    .withApiVersion("1.26")
+    .build();
+
+  implicit lazy val dockerClient = DockerClientBuilder.getInstance(config).build();
   implicit val timeout = Duration.create(60, SECONDS)
 }
