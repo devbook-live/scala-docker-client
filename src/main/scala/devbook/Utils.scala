@@ -211,6 +211,7 @@ object Utils {
         // Forcefully remove the container and then remove the image
         Try(dockerClient.removeContainerCmd(containerId).withForce(true).exec()) match {
           case Success(_) => 
+            snippetIdToContainerId.remove(containerId)
             System.out.synchronized {
               println(s"Successfully removed container $containerId")
             }
