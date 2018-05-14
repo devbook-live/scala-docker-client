@@ -211,7 +211,8 @@ object Utils {
         // Forcefully remove the container and then remove the image
         Try(dockerClient.removeContainerCmd(containerId).withForce(true).exec()) match {
           case Success(_) => 
-            snippetIdToContainerId.remove(containerId)
+            // Remove imageId->container from hashtable
+            snippetIdToContainerId.remove(imageId)
             System.out.synchronized {
               println(s"Successfully removed container $containerId")
             }
@@ -252,13 +253,29 @@ object Utils {
   }
 
   def createImageAndRunContainer(id: String, indexJSContents: String): Unit = {
+    var snipId: String = null
     Future {
       createImage(id, indexJSContents) match {
         case (imageId, snippetId) =>
+          snipId = snippetId
           createAndRunContainer(imageId, snippetId)
       }
     } onComplete {
       case Success(_) => 
+        Future {
+          // Set running to false once the snippet is done running
+          db.collection("snippets").document(snipId).set(Map[String, Object]("running" -> false).asJava)
+        } onComplete {
+          case Success(_) =>
+            System.out.synchronized {
+              println(s"Set running to false for snippet with snippet id $id.")
+            }
+          case Failure(_) =>
+            System.out.synchronized {
+              println(s"Failed to set running to false for snippet with snippet id $id.")
+            }
+        }
+
         System.out.synchronized {
           println(s"Finished running $id.")
         }

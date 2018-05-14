@@ -34,3 +34,4 @@ fork := true
 
 cancelable in Global := true
 
+herokuFatJar in Compile := Some((assemblyOutputPath in assembly).value)
