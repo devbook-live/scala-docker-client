@@ -35,3 +35,8 @@ fork := true
 cancelable in Global := true
 
 herokuFatJar in Compile := Some((assemblyOutputPath in assembly).value)
+
+assemblyMergeStrategy in assembly := {
+ case PathList("META-INF", xs @ _*) => MergeStrategy.discard
+ case x => MergeStrategy.first
+}

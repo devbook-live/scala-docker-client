@@ -24,8 +24,10 @@ import com.github.dockerjava.core.command.{BuildImageResultCallback, WaitContain
 import com.google.cloud.firestore.{ListenerRegistration, EventListener, FirestoreException, QuerySnapshot, QueryDocumentSnapshot}
 
 object Utils {
+  // Thread-safe hashtable that maps from snippetId -> containerId
   private[DevBook] val snippetIdToContainerId: ConcurrentMap[String, String] = new ConcurrentHashMap[String, String]().asScala
-  var listenerRegistration: ListenerRegistration = null
+
+  private var listenerRegistration: ListenerRegistration = null
 
   val defaultDockerfileContents =
     """
@@ -55,7 +57,18 @@ object Utils {
     npm-debug.log
     """
 
+  val alphanumericPattern = "[a-zA-Z0-9]+".r
+
+  // Scala is statically typed so you can't just dynamically create some object with the properties you want
+  // A case class is very similar to what you'd get from an object literal; it's just strongly and statically typed
+  // And the keys are predefined in a case class
   case class DockerImageContents(indexJSContents: String, dockerfileContents: String = defaultDockerfileContents, packageJSONContents: String = defaultPackageJSONContents, dockerignoreContents: String = defaultDockerIgnoreContents)
+
+  def synchronizedPrintln(output: String) = {
+    System.out.synchronized {
+      System.out.println(output)
+    }
+  }
 
   def writeTemporaryDirectory(id: String, contents: DockerImageContents): Unit = {
     val path = s"/tmp/docker-$id/"
@@ -82,43 +95,38 @@ object Utils {
     }
   }
 
-  private def logEvents = {
-    val eventsCallback = new EventsResultCallback() {
-      override def onNext(event: Event) {
-        System.out.synchronized {
-          println(s"Event: ${event}")
-        }
-        // Call parent class' onNext method with event
-        super.onNext(event)
-      }
-    }
-
-    Future {
-      dockerClient.eventsCmd().exec(eventsCallback).awaitCompletion().close()
-    } onComplete {
-      case _ => 
-        System.out.synchronized {
-          println("Completed event logging")
-        }
-    }
-  }
-
   private val buildImageCallback = new BuildImageResultCallback() {
     override def onNext(item: BuildResponseItem) = {
-      println(s"BuildImageResultCallback: ${item.getStream()}")
+      synchronizedPrintln(s"BuildImageResultCallback: ${item.getStream()}")
       super.onNext(item)
     }
   }
 
-  private val alphanumericPattern = "[a-zA-Z0-9]+".r
+  // We're using a Java API and Java unlike Scala is not functional,
+  // so the way it works is when you want a callback, you define an interface or abstract class
+  // and the consumer of the API overrides the function defined in the interface or abstract class
+  private class MyLogContainerResultCallback(snippetId: String) extends LogContainerResultCallback {
+    // Basically an efficient way to build a String
+    val log = new StringBuilder()
 
-  private class MyLogContainerResultCallback(snipId: String) extends LogContainerResultCallback {
-    private val snippetId = snipId
-    val log = new StringBuilder();
-
+    // We get the payload from the frame
+    // If the payload contains alphanumeric chars
+    // and doesn't have /usr/src/app or node in it
+    // we add the payload to the log and
+    // we send the log to Firestore
+    // in snippetOutputs
+    //
+    // This is ONLY giving us the output from the
+    // container
     override def onNext(frame: Frame): Unit = {
       val payload = new String(frame.getPayload())
       if (!alphanumericPattern.findFirstIn(payload).isEmpty && !payload.contains("/usr/src/app") && !payload.contains("node")) {
+        // I'm synchronizing on the log because the
+        // Java Virtual Machine has a happens-before relationship
+        // that guarantees that if I synchronize on something and
+        // it was synchronized before and written on, I will see
+        // that write in memory; I was taught to think of it
+        // as a cache flush where all CPUs flush their caches
         log.synchronized {
           log ++= payload 
         }
@@ -131,22 +139,14 @@ object Utils {
           }
         } onComplete {
           case Success(_) =>
-            System.out.synchronized {
-              println(s"Updated output for snippet $snippetId.")
-            }
+            synchronizedPrintln(s"Updated output for snippet $snippetId.")
           case Failure(_) =>
-            System.out.synchronized {
-              println(s"Failed to update output for snippet $snippetId.")
-            }
+            synchronizedPrintln(s"Failed to update output for snippet $snippetId.")
         }
       }
 
-      System.out.synchronized {
-        println("Payload: " + payload)
-      }
-
+      synchronizedPrintln("Payload: " + payload)
       super.onNext(frame)
-
     }
 
     override def toString(): String = {
@@ -158,16 +158,12 @@ object Utils {
 
   private val waitContainerResultCallback = new WaitContainerResultCallback() {
     override def onNext(waitResponse: WaitResponse) = {
-      System.out.synchronized {
-        println("Wait response: " + waitResponse.toString())
-      }
+      synchronizedPrintln("Wait response: " + waitResponse.toString())
     }
   }
 
-  def createImage(snippetId: String, indexJSContents: String): (String, String) = {
-    System.out.synchronized {
-      println("Creating image")
-    }
+  def createImage(snippetId: String, indexJSContents: String): String = {
+    synchronizedPrintln("Creating image")
     var imageId: String = null
 
     // This tells the global ExecutionContext that this is blocking
@@ -183,24 +179,25 @@ object Utils {
       imageId = dockerClient.buildImageCmd(baseDir).exec(buildImageCallback).awaitImageId()
     }
 
-    System.out.synchronized {
-      println(s"Built image with image id ${imageId}")
-    }
-    (imageId, snippetId)
+    synchronizedPrintln(s"Built image with image id ${imageId}")
+    // Last line in a function is the return value
+    // Using "return" keyword is bad as it isn't referentially transparent
+    imageId
   }
 
   def createAndRunContainer(imageId: String, snippetId: String): Unit = {
-    System.out.synchronized {
-      println("Creating container")
-    }
+    synchronizedPrintln("Creating container")
+    // Create the container
     val container = dockerClient.createContainerCmd(imageId)
       .withCmd("npm", "start")
       .exec()
     
     val containerId = container.getId()
 
-    snippetIdToContainerId.putIfAbsent(snippetId, containerId)
+    // Add snippetId -> containerId to hashtable
+    snippetIdToContainerId.put(snippetId, containerId)
 
+    // Start container
     dockerClient.startContainerCmd(containerId).exec()
 
     // Separate task to kill container
@@ -213,31 +210,18 @@ object Utils {
           case Success(_) => 
             // Remove imageId->container from hashtable
             snippetIdToContainerId.remove(imageId)
-            System.out.synchronized {
-              println(s"Successfully removed container $containerId")
-            }
+            synchronizedPrintln(s"Successfully removed container $containerId")
           case Failure(_) =>
-            System.out.synchronized {
-              println(s"Failed to remove container $containerId")
-            }
+            synchronizedPrintln(s"Failed to remove container $containerId")
         }
-        /*
-        Try(dockerClient.removeImageCmd(imageId).exec()) match {
-          case Success(_) => 
-            System.out.synchronized {
-              println(s"Successfully removed image $imageId")
-            }
-          case Failure(_) =>
-            System.out.synchronized {
-              println(s"Failed to remove image $imageId")
-            }
-        }
-        */
       }
     } onComplete {
+      // I don't care about the result
+      // Like somePromise.then(() => {})
       case _ => ()
     }
 
+    // Log the container's output
     blocking {
       dockerClient.logContainerCmd(containerId)
         .withStdErr(true)
@@ -249,39 +233,34 @@ object Utils {
         .close()
     }
 
+    // Execute this callback when container ends
     dockerClient.waitContainerCmd(containerId).exec(waitContainerResultCallback)
   }
 
-  def createImageAndRunContainer(id: String, indexJSContents: String): Unit = {
-    var snipId: String = null
+  def createImageAndRunContainer(snippetId: String, indexJSContents: String): Unit = {
     Future {
-      createImage(id, indexJSContents) match {
-        case (imageId, snippetId) =>
-          snipId = snippetId
-          createAndRunContainer(imageId, snippetId)
-      }
+      val imageId = createImage(snippetId, indexJSContents)
+      createAndRunContainer(imageId, snippetId)
     } onComplete {
       case Success(_) => 
         Future {
           // Set running to false once the snippet is done running
-          db.collection("snippets").document(snipId).set(Map[String, Object]("running" -> false.asInstanceOf[AnyRef]).asJava)
+          // A little note here: I'm doing something called casting
+          // Casting forcefully changes the type of an object
+          // It can be dangerous but basically here it wants
+          // an Object (Object is AnyRef in Scala), and false is
+          // actually a Boolean
+          db.collection("snippets").document(snippetId).set(Map[String, Object]("running" -> false.asInstanceOf[AnyRef]).asJava)
         } onComplete {
           case Success(_) =>
-            System.out.synchronized {
-              println(s"Set running to false for snippet with snippet id $id.")
-            }
+            synchronizedPrintln(s"Set running to false for snippet with snippet id $snippetId.")
           case Failure(_) =>
-            System.out.synchronized {
-              println(s"Failed to set running to false for snippet with snippet id $id.")
-            }
+            synchronizedPrintln(s"Failed to set running to false for snippet with snippet id $snippetId.")
         }
-
-        System.out.synchronized {
-          println(s"Finished running $id.")
-        }
+        synchronizedPrintln(s"Finished running $snippetId.")
       case Failure(err) => 
         System.out.synchronized {
-          println(s"Error running $id.")
+          println(s"Error running $snippetId.")
           println(s"Error: $err")
         }
     }
@@ -292,8 +271,8 @@ object Utils {
       val snippetId = doc.getId()
       // Assuming a snippet has some text
       // Check if we've seen this snippet before
-      // If not, create the image first and then run container
-      // Otherwise just restart the container
+      // If so, remove the container
+      // Either way, create the image first and then run container
       Option(doc.get("text")).foreach(indexJSContents => {
         // So concurrent.Map.get() returns an Option so I have to do something to get the value
         // Option.getOrElse() is one of the things I can do to get the value
@@ -302,13 +281,9 @@ object Utils {
           val containerId: String = containerIdOpt.getOrElse(null)
           Try(dockerClient.removeContainerCmd(containerId).withForce(true).exec()) match {
             case Success(_) =>
-              System.out.synchronized {
-                println(s"Successfully removed container $containerId")
-              }
+              synchronizedPrintln(s"Successfully removed container $containerId")
             case Failure(_) =>
-              System.out.synchronized {
-                println(s"Failed to remove container $containerId")
-              }
+              synchronizedPrintln(s"Failed to remove container $containerId")
           }
         }
 
@@ -335,9 +310,7 @@ object Utils {
               System.err.println(s"Listen failed: $e")
             }
           case None =>
-            System.out.synchronized {
-              println(s"Received query snapshot of size ${snapshots.size}");
-            }
+            synchronizedPrintln(s"Received query snapshot of size ${snapshots.size}");
             snapshots.forEach(new Consumer[QueryDocumentSnapshot]() {
               override def accept(arg: QueryDocumentSnapshot) = {
                 querySnapshotCallback.apply(arg)
@@ -351,6 +324,4 @@ object Utils {
       listenerRegistration = db.collection("snippets").whereEqualTo("running", true)
         .addSnapshotListener(eventListenerCallback)
   }
-
-
 }
