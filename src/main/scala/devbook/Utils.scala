@@ -264,7 +264,7 @@ object Utils {
       case Success(_) => 
         Future {
           // Set running to false once the snippet is done running
-          db.collection("snippets").document(snipId).set(Map[String, Object]("running" -> false).asJava)
+          db.collection("snippets").document(snipId).set(Map[String, Object]("running" -> false.asInstanceOf[AnyRef]).asJava)
         } onComplete {
           case Success(_) =>
             System.out.synchronized {
@@ -297,11 +297,9 @@ object Utils {
       Option(doc.get("text")).foreach(indexJSContents => {
         // So concurrent.Map.get() returns an Option so I have to do something to get the value
         // Option.getOrElse() is one of the things I can do to get the value
-        val containerIdOpt = snippetIdToContainerId.get(snippetId)
+        val containerIdOpt: Option[String] = snippetIdToContainerId.get(snippetId)
         if (!containerIdOpt.isEmpty) {
-          // So I'm using get() here which is normally an unsafe operation (because the Option
-          // could be None) but I just checked so I know it's not None
-          val containerId = containerIdOpt.get()
+          val containerId: String = containerIdOpt.getOrElse(null)
           Try(dockerClient.removeContainerCmd(containerId).withForce(true).exec()) match {
             case Success(_) =>
               System.out.synchronized {
