@@ -70,8 +70,8 @@ object Utils {
     }
   }
 
-  def writeTemporaryDirectory(id: String, contents: DockerImageContents): Unit = {
-    val path = s"/tmp/docker-$id/"
+  def writeTemporaryDirectory(id: String, contents: DockerImageContents): String = {
+    val path = s"/tmp/docker-$id-${scala.util.Random.alphanumeric.take(10).mkString}/"
 
     val createdDir = new File(path).mkdirs()
     val pwIndexJS = new PrintWriter(path + "index.js")
@@ -84,7 +84,7 @@ object Utils {
         pwIndexJS.write(indexJSContents)
         pwIndexJS.close
 
-        pwDockerfile.write(dockerfileContents)
+        pwDockerfile.write(dockerfileContents.replace("/usr/src/app", path))
         pwDockerfile.close
 
         pwPackageJSON.write(packageJSONContents)
@@ -93,6 +93,8 @@ object Utils {
         pwDockerignore.write(dockerignoreContents)
         pwDockerignore.close
     }
+    
+    path
   }
 
   private val buildImageCallback = new BuildImageResultCallback() {
@@ -120,7 +122,7 @@ object Utils {
     // container
     override def onNext(frame: Frame): Unit = {
       val payload = new String(frame.getPayload())
-      if (!alphanumericPattern.findFirstIn(payload).isEmpty && !payload.contains("/usr/src/app") && !payload.contains("node")) {
+      if (!payload.contains("/usr/src/app") && !payload.contains("node")) {
         // I'm synchronizing on the log because the
         // Java Virtual Machine has a happens-before relationship
         // that guarantees that if I synchronize on something and
@@ -174,8 +176,9 @@ object Utils {
     // tasks it takes off the queue; it basically allows reuse of
     // threads because thread creation is very expensive
     blocking {
-      writeTemporaryDirectory(snippetId, DockerImageContents(indexJSContents))
-      val baseDir = new java.io.File(s"/tmp/docker-$snippetId/")
+      val path = writeTemporaryDirectory(snippetId, DockerImageContents(indexJSContents))
+      //val baseDir = new java.io.File(s"/tmp/docker-$snippetId/")
+      val baseDir = new java.io.File(path)
       imageId = dockerClient.buildImageCmd(baseDir).exec(buildImageCallback).awaitImageId()
     }
 
@@ -237,31 +240,48 @@ object Utils {
     dockerClient.waitContainerCmd(containerId).exec(waitContainerResultCallback)
   }
 
+
+  def setRunningFalseFuture(snippetId: String) = {
+    Future {
+      // Set running to false once the snippet is done running
+      // A little note here: I'm doing something called casting
+      // Casting forcefully changes the type of an object
+      // It can be dangerous but basically here it wants
+      // an Object (Object is AnyRef in Scala), and false is
+      // actually a Boolean
+      db.collection("snippets").document(snippetId).update(Map[String, Object]("running" -> false.asInstanceOf[AnyRef]).asJava)
+    } onComplete {
+      case Success(_) =>
+        synchronizedPrintln(s"Set running to false for snippet with snippet id $snippetId.")
+      case Failure(_) =>
+        synchronizedPrintln(s"Failed to set running to false for snippet with snippet id $snippetId.")
+    }
+  }
+
   def createImageAndRunContainer(snippetId: String, indexJSContents: String): Unit = {
     Future {
       val imageId = createImage(snippetId, indexJSContents)
       createAndRunContainer(imageId, snippetId)
     } onComplete {
       case Success(_) => 
-        Future {
-          // Set running to false once the snippet is done running
-          // A little note here: I'm doing something called casting
-          // Casting forcefully changes the type of an object
-          // It can be dangerous but basically here it wants
-          // an Object (Object is AnyRef in Scala), and false is
-          // actually a Boolean
-          db.collection("snippets").document(snippetId).set(Map[String, Object]("running" -> false.asInstanceOf[AnyRef]).asJava)
-        } onComplete {
-          case Success(_) =>
-            synchronizedPrintln(s"Set running to false for snippet with snippet id $snippetId.")
-          case Failure(_) =>
-            synchronizedPrintln(s"Failed to set running to false for snippet with snippet id $snippetId.")
-        }
+        setRunningFalseFuture(snippetId)
         synchronizedPrintln(s"Finished running $snippetId.")
       case Failure(err) => 
+        setRunningFalseFuture(snippetId)
         System.out.synchronized {
           println(s"Error running $snippetId.")
           println(s"Error: $err")
+        }
+
+        Future {
+          blocking {
+            db.collection("snippetOutputs").document(snippetId).set(Map[String, Object]("output" -> err.toString()).asJava)
+          }
+        } onComplete {
+          case Success(_) =>
+            synchronizedPrintln(s"Updated output for snippet $snippetId.")
+          case Failure(_) =>
+            synchronizedPrintln(s"Failed to update output for snippet $snippetId.")
         }
     }
   }
@@ -274,6 +294,7 @@ object Utils {
       // If so, remove the container
       // Either way, create the image first and then run container
       Option(doc.get("text")).foreach(indexJSContents => {
+        synchronizedPrintln(s"Got text: ${indexJSContents}")
         // So concurrent.Map.get() returns an Option so I have to do something to get the value
         // Option.getOrElse() is one of the things I can do to get the value
         val containerIdOpt: Option[String] = snippetIdToContainerId.get(snippetId)
