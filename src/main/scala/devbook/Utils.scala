@@ -241,7 +241,7 @@ object Utils {
     Future {
       blocking {
         // Wait for 15 seconds
-        Thread.sleep(5 * 1000)
+        Thread.sleep(15 * 1000)
         // Forcefully remove the container and then remove the image
         Try(dockerClient.removeContainerCmd(containerId).withForce(true).exec()) match {
           case Success(_) => 
