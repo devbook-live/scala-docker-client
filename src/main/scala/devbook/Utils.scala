@@ -277,10 +277,13 @@ object Utils {
       // If not, create the image first and then run container
       // Otherwise just restart the container
       Option(doc.get("text")).foreach(indexJSContents => {
-        if (snippetIdToContainerId.contains(snippetId)) {
-          // So concurrent.Map.get() returns an Option so I have to do something to get the value
-          // Option.getOrElse() is one of the things I can do to get the value
-          val containerId = snippetIdToContainerId.get(snippetId).getOrElse(null)
+        // So concurrent.Map.get() returns an Option so I have to do something to get the value
+        // Option.getOrElse() is one of the things I can do to get the value
+        val containerIdOpt = snippetIdToContainerId.get(snippetId)
+        if (!containerIdOpt.isEmpty) {
+          // So I'm using get() here which is normally an unsafe operation (because the Option
+          // could be None) but I just checked so I know it's not None
+          val containerId = containerIdOpt.get()
           Try(dockerClient.removeContainerCmd(containerId).withForce(true).exec()) match {
             case Success(_) =>
               System.out.synchronized {
