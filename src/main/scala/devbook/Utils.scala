@@ -144,34 +144,37 @@ object Utils {
     // This is ONLY giving us the output from the
     // container
     override def onNext(frame: Frame): Unit = {
-      val payload = new String(frame.getPayload())
-      if (!payload.contains("/usr/src/app") && !payload.contains("node")) {
-        // I'm synchronizing on the log because the
-        // Java Virtual Machine has a happens-before relationship
-        // that guarantees that if I synchronize on something and
-        // it was synchronized before and written on, I will see
-        // that write in memory; I was taught to think of it
-        // as a cache flush where all CPUs flush their caches
-        log.synchronized {
-          log ++= payload 
-        }
-
-        Future {
-          blocking {
-            log.synchronized {
-              db.collection("snippetOutputs").document(snippetId).set(Map[String, Object]("output" -> log.toString()).asJava)
-            }
+      if (snippetIdToContainerId.contains(snippetId)) {
+        val payload = new String(frame.getPayload())
+        if (!payload.contains("/usr/src/app") && !payload.contains("node") && !payload.contains("defaultName")) {
+          // I'm synchronizing on the log because the
+          // Java Virtual Machine has a happens-before relationship
+          // that guarantees that if I synchronize on something and
+          // it was synchronized before and written on, I will see
+          // that write in memory; I was taught to think of it
+          // as a cache flush where all CPUs flush their caches
+          log.synchronized {
+            log ++= payload 
+            log ++= "\n"
           }
-        } onComplete {
-          case Success(_) =>
-            synchronizedPrintln(s"Updated output for snippet $snippetId.")
-          case Failure(_) =>
-            synchronizedPrintln(s"Failed to update output for snippet $snippetId.")
-        }
-      }
 
-      synchronizedPrintln("Payload: " + payload)
-      super.onNext(frame)
+          Future {
+            blocking {
+              log.synchronized {
+                db.collection("snippetOutputs").document(snippetId).set(Map[String, Object]("output" -> log.toString()).asJava)
+              }
+            }
+          } onComplete {
+            case Success(_) =>
+              synchronizedPrintln(s"Updated output for snippet $snippetId.")
+            case Failure(_) =>
+              synchronizedPrintln(s"Failed to update output for snippet $snippetId.")
+          }
+        }
+
+        synchronizedPrintln("Payload: " + payload)
+        super.onNext(frame)
+      }
     }
 
     override def toString(): String = {
@@ -194,6 +197,7 @@ object Utils {
     // This tells the global ExecutionContext that this is blocking
     // and maybe it should spawn more threads
     // https://stackoverflow.com/a/19682155
+    //
     // An ExecutionContext is something that keeps a pool of threads
     // and it grabs tasks from a worker queue and assigns threads to
     // tasks it takes off the queue; it basically allows reuse of
@@ -206,8 +210,12 @@ object Utils {
       val path = writeTemporaryDirectory(snippetId, DockerImageContents(indexJSContents))
       //val baseDir = new java.io.File(s"/tmp/docker-$snippetId/")
       val baseDir = new java.io.File(path)
+      // Tell Docker to build the actual image
       imageId = dockerClient.buildImageCmd(baseDir).exec(buildImageCallback).awaitImageId()
 
+      // So here we're doing some special stuff
+      // We're grabbing the image name off the output from building the image
+      // This syntax is very common in what's called the producer-consumer problem
       imageIdHolder.synchronized {
         while (imageIdHolder.isEmpty) {
           imageIdHolder.wait()
@@ -234,23 +242,23 @@ object Utils {
     // Add snippetId -> containerId to hashtable
     snippetIdToContainerId.put(snippetId, containerId)
 
-    // Start container
-    dockerClient.startContainerCmd(containerId).exec()
-
     // Separate task to kill container
     Future {
       blocking {
-        // Wait for 15 seconds
-        Thread.sleep(15 * 1000)
-        // Forcefully remove the container and then remove the image
+        synchronizedPrintln("Starting sleep for kill")
+        // Wait for 4 seconds
+        Thread.sleep(10 * 1000)
+        synchronizedPrintln("Starting kill")
+        // Forcefully remove the container
         Try(dockerClient.removeContainerCmd(containerId).withForce(true).exec()) match {
           case Success(_) => 
-            // Remove imageId->container from hashtable
-            snippetIdToContainerId.remove(imageId)
+            // Remove snippetId->container from hashtable
+            snippetIdToContainerId.remove(snippetId)
             synchronizedPrintln(s"Successfully removed container $containerId")
           case Failure(_) =>
             synchronizedPrintln(s"Failed to remove container $containerId")
         }
+        // Remove the image
         Try(dockerClient.removeImageCmd(imageId).exec()) match {
           case Success(_) => 
             System.out.synchronized {
@@ -267,6 +275,9 @@ object Utils {
       // Like somePromise.then(() => {})
       case _ => ()
     }
+
+    // Start container
+    dockerClient.startContainerCmd(containerId).exec()
 
     // Log the container's output
     blocking {
@@ -303,20 +314,29 @@ object Utils {
   }
 
   def createImageAndRunContainer(snippetId: String, indexJSContents: String): Unit = {
+    // Create a new task for creating the image and running the container
+    // So you can think of each Future as a task, and each task is added to a task queue
+    // and tasks are assigned to threads in a thread pool
     Future {
       val imageId = createImage(snippetId, indexJSContents)
       createAndRunContainer(imageId, snippetId)
     } onComplete {
       case Success(_) => 
+        // We succesfully created the image and container
         setRunningFalseFuture(snippetId)
         synchronizedPrintln(s"Finished running $snippetId.")
       case Failure(err) => 
+        // Something went wrong in creating image and container
         setRunningFalseFuture(snippetId)
         System.out.synchronized {
           println(s"Error running $snippetId.")
           println(s"Error: $err")
         }
 
+        // Here we set the output to the error in Firestore
+        // in a new task
+        // I'm creating a new task because this operation takes time
+        // (think async operation)
         Future {
           blocking {
             db.collection("snippetOutputs").document(snippetId).set(Map[String, Object]("output" -> err.toString()).asJava)
@@ -333,10 +353,12 @@ object Utils {
   val querySnapshotCallback =
     (doc: QueryDocumentSnapshot) => {
       val snippetId = doc.getId()
+      synchronizedPrintln(s"snippetId: ${snippetId}")
       // Assuming a snippet has some text
       // Check if we've seen this snippet before
       // If so, remove the container
       // Either way, create the image first and then run container
+      synchronizedPrintln(s"Option(doc.get(text)): ${Option(doc.get("text"))}")
       Option(doc.get("text")).foreach(indexJSContents => {
         synchronizedPrintln(s"Got text: ${indexJSContents}")
         // So concurrent.Map.get() returns an Option so I have to do something to get the value
