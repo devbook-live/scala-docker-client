@@ -9,13 +9,43 @@ import scala.collection.mutable.{ListBuffer, StringBuilder}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.{Future, Await}
 
+import javax.servlet.http.HttpServletRequest
+import javax.servlet.http.HttpServletResponse
+import javax.servlet.ServletException
+ 
+import org.eclipse.jetty.server.Server
+import org.eclipse.jetty.server.Request
+import org.eclipse.jetty.server.handler.AbstractHandler
+ 
 // object declares a singleton class
 object DockerMain {
   // Just an object
   val lock = new AnyRef
   val flag: Boolean = false
 
+  def jettyServer(): Unit = {
+    Future {
+      val handler = new AbstractHandler() {
+        override def handle(target: String, baseRequest: Request, request: HttpServletRequest, response: HttpServletResponse) {
+          response.setContentType("text/html;charset=utf-8")
+          response.setStatus(HttpServletResponse.SC_OK)
+          baseRequest.setHandled(true)
+          response.getWriter().println("<h1>Hello World</h1>")
+        }
+      }
+
+      val port = if(System.getenv("PORT") != null) System.getenv("PORT").toInt else 8080
+      val server = new Server(port)
+
+      server.setHandler(handler)
+
+      server.start()
+      server.join()
+    }
+  }
+
   def main(args: Array[String]): Unit = {
+    jettyServer()
     snippetsSubscribe()
 
     // Every object in Java has what's called an intrinsic lock or monitor lock

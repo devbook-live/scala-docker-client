@@ -29,7 +29,9 @@ libraryDependencies ++= Seq(
   "com.google.firebase" % "firebase-admin" % "6.0.0",
   "com.google.apis" % "google-api-services-oauth2" % "v2-rev137-1.23.0",
   "io.grpc" % "grpc-netty" % "1.12.0",
-  "io.grpc" % "grpc-okhttp" % "1.12.0"
+  "io.grpc" % "grpc-okhttp" % "1.12.0",
+  "javax.servlet" % "javax.servlet-api" % "3.1.0" % "provided",
+  "org.eclipse.jetty" % "jetty-server" % "9.4.10.v20180503"
 )
 
 fork := true
