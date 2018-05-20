@@ -229,6 +229,17 @@ object Utils {
     // Using "return" keyword is bad as it isn't referentially transparent
     imageId
   }
+  
+  def removeContainer(snippetId: String, containerId: String) = {
+    Try(dockerClient.removeContainerCmd(containerId).withForce(true).exec()) match {
+      case Success(_) => 
+        // Remove snippetId->container from hashtable
+        snippetIdToContainerId.remove(snippetId)
+        synchronizedPrintln(s"Successfully removed container $containerId")
+      case Failure(_) =>
+        synchronizedPrintln(s"Failed to remove container $containerId")
+    }
+  }
 
   def createAndRunContainer(imageId: String, snippetId: String): Unit = {
     synchronizedPrintln("Creating container")
@@ -250,14 +261,7 @@ object Utils {
         Thread.sleep(10 * 1000)
         synchronizedPrintln("Starting kill")
         // Forcefully remove the container
-        Try(dockerClient.removeContainerCmd(containerId).withForce(true).exec()) match {
-          case Success(_) => 
-            // Remove snippetId->container from hashtable
-            snippetIdToContainerId.remove(snippetId)
-            synchronizedPrintln(s"Successfully removed container $containerId")
-          case Failure(_) =>
-            synchronizedPrintln(s"Failed to remove container $containerId")
-        }
+        removeContainer(snippetId, containerId)
         // Remove the image
         Try(dockerClient.removeImageCmd(imageId).exec()) match {
           case Success(_) => 

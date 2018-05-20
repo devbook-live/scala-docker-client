@@ -22,6 +22,8 @@ object DockerMain {
   // Just an object
   val lock = new AnyRef
   val flag: Boolean = false
+  var serverOpt: Option[Server] = None
+
 
   def jettyServer(): Unit = {
     Future {
@@ -35,16 +37,33 @@ object DockerMain {
       }
 
       val port = if(System.getenv("PORT") != null) System.getenv("PORT").toInt else 8080
-      val server = new Server(port)
+      serverOpt = Some(new Server(port))
 
-      server.setHandler(handler)
+      serverOpt.foreach(server => {
+        server.setHandler(handler)
 
-      server.start()
-      server.join()
+        synchronizedPrintln("Starting HTTP server...")
+        server.start()
+        server.join()
+      })
     }
   }
 
   def main(args: Array[String]): Unit = {
+    // On shutdown
+    scala.sys.addShutdownHook {
+      synchronizedPrintln("Stopping HTTP server...")
+      // Stop the HTTP server
+      serverOpt.foreach(server => server.stop())
+
+      synchronizedPrintln("Removing all containers...")
+      // Forcefully remove all the containers still in the hashtable
+      // So the foreach of ConcurrentMap takes in an anonymous function
+      // and that anonymous function takes in a 2-element tuple (think of it like a 2-element array)
+      // So I'm deconstructing/pattern matching on that tuple to get snippetId and containerId
+      snippetIdToContainerId.foreach({ case (snippetId, containerId) => removeContainer(snippetId, containerId) })
+    }
+
     jettyServer()
     snippetsSubscribe()
 
