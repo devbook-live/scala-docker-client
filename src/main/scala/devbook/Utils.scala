@@ -146,7 +146,7 @@ object Utils {
     override def onNext(frame: Frame): Unit = {
       if (snippetIdToContainerId.contains(snippetId)) {
         val payload = new String(frame.getPayload())
-        if (!payload.contains("/usr/src/app") && !payload.contains("node") && !payload.contains("defaultName")) {
+        if (!payload.contains("/usr/src/app") && !payload.contains("node") && !payload.contains("defaultName") && !payload.trim().isEmpty()) {
           // I'm synchronizing on the log because the
           // Java Virtual Machine has a happens-before relationship
           // that guarantees that if I synchronize on something and
