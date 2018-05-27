@@ -22,6 +22,9 @@ val workaround = {
   ()
 }
 
+lazy val akkaHttpVersion = "10.0.11"
+lazy val akkaVersion    = "2.5.11"
+
 libraryDependencies ++= Seq(
   "org.slf4j" % "slf4j-simple" % "1.8.0-beta2",
   "com.github.docker-java" % "docker-java" % "3.1.0-rc-3",
@@ -30,8 +33,16 @@ libraryDependencies ++= Seq(
   "com.google.apis" % "google-api-services-oauth2" % "v2-rev137-1.23.0",
   "io.grpc" % "grpc-netty" % "1.12.0",
   "io.grpc" % "grpc-okhttp" % "1.12.0",
-  "javax.servlet" % "javax.servlet-api" % "3.1.0" % "provided",
-  "org.eclipse.jetty" % "jetty-server" % "9.4.10.v20180503"
+
+  "com.typesafe.akka" %% "akka-http"            % akkaHttpVersion,
+  "com.typesafe.akka" %% "akka-http-spray-json" % akkaHttpVersion,
+  "com.typesafe.akka" %% "akka-http-xml"        % akkaHttpVersion,
+  "com.typesafe.akka" %% "akka-stream"          % akkaVersion,
+
+  "com.typesafe.akka" %% "akka-http-testkit"    % akkaHttpVersion % Test,
+  "com.typesafe.akka" %% "akka-testkit"         % akkaVersion     % Test,
+  "com.typesafe.akka" %% "akka-stream-testkit"  % akkaVersion     % Test,
+  "org.scalatest"     %% "scalatest"            % "3.0.1"         % Test
 )
 
 fork := true
