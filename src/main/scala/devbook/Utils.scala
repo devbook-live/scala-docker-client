@@ -2,10 +2,10 @@ package DevBook
 
 import DevBook.DockerContext._
 import DevBook.FirebaseService._
+import DevBook.Callbacks._
 
 import java.io._
 import java.util.concurrent.ConcurrentHashMap
-import java.util.function.Consumer
 
 import scala.collection.JavaConverters._
 import scala.collection.concurrent.{Map => ConcurrentMap}
@@ -18,18 +18,19 @@ import scala.concurrent.duration._
 import scala.util.{Try, Success, Failure}
 import scala.language.postfixOps
 
-import com.github.dockerjava.api.model.{WaitResponse, BuildResponseItem, Event, Frame}
-import com.github.dockerjava.core.command.{BuildImageResultCallback, WaitContainerResultCallback, EventsResultCallback, LogContainerResultCallback} 
-
 import com.google.cloud.firestore.{ListenerRegistration, EventListener, FirestoreException, QuerySnapshot, QueryDocumentSnapshot}
 
 object Utils {
   // Thread-safe hashtable that maps from snippetId -> containerId
   private[DevBook] val snippetIdToContainerId: ConcurrentMap[String, String] = new ConcurrentHashMap[String, String]().asScala
 
+  // Represents a listener that can be removed via
+  // listenerRegistration.remove()
   private var listenerRegistration: ListenerRegistration = null
 
-  private val imageIdHolder = new StringBuilder()
+  // Basically a better way to build a String
+  // since Strings in Java are immutable
+  private[DevBook] val imageIdHolder = new StringBuilder()
 
   val defaultDockerfileContents =
     """
@@ -59,6 +60,7 @@ object Utils {
     npm-debug.log
     """
 
+  // Regular expression pattern
   val alphanumericPattern = "[a-zA-Z0-9]+".r
 
   // Scala is statically typed so you can't just dynamically create some object with the properties you want
@@ -66,6 +68,11 @@ object Utils {
   // And the keys are predefined in a case class
   case class DockerImageContents(indexJSContents: String, dockerfileContents: String = defaultDockerfileContents, packageJSONContents: String = defaultPackageJSONContents, dockerignoreContents: String = defaultDockerIgnoreContents)
 
+  // The API documentation for println makes no guarantee
+  // of thread safety so I'm synchronizing on it
+  // Basically when the synchronizedPrintln method is called
+  // the other threads have to wait in line while a thread is
+  // printing something out
   def synchronizedPrintln(output: String) = {
     System.out.synchronized {
       System.out.println(output)
@@ -75,18 +82,31 @@ object Utils {
   def writeTemporaryDirectory(id: String, contents: DockerImageContents): String = {
     val path = s"/tmp/docker-$id-${scala.util.Random.alphanumeric.take(10).mkString}/"
 
+    // Create the directory
     val createdDir = new File(path).mkdirs()
+    // Open file handles for each file we want to write to
     val pwIndexJS = new PrintWriter(path + "index.js")
     val pwDockerfile = new PrintWriter(path + "Dockerfile")
     val pwPackageJSON = new PrintWriter(path + "package.json")
     val pwDockerignore = new PrintWriter(path + ".dockerignore")
 
+    // This is the power of case classes
+    // https://www.artima.com/pins1ed/case-classes-and-pattern-matching.html
+    //
+    // Case classes are Scala's way to allow pattern matching on objects without
+    // requiring a large amount of boilerplate. In the common case, all you need
+    // to do is add a single case keyword to each class that you want to be pattern matchable.
+    //
+    // Pattern matching is like object destructuring and switch but much much more powerful
+    // 
+    // Here we're basically just writing all the stuff to the temporary files
+    // And then closing the file handles/descriptors
+    // https://en.wikipedia.org/wiki/File_descriptor
     contents match {
       case DockerImageContents(indexJSContents, dockerfileContents, packageJSONContents, dockerignoreContents) =>
         val padding1 = new StringBuilder();
         val padding2 = new StringBuilder();
 
-        //for (_ <- 1 to 5) padding1 ++= " /* " + scala.util.Random.alphanumeric.take(20).mkString + " */ \n"
         padding1 ++= "function thisRandomRandomRandomFunc() { "
         padding1 ++= scala.util.Random.nextInt().toString() + " + " + scala.util.Random.nextInt().toString()
         padding1 ++= " } \n\n"
@@ -110,84 +130,9 @@ object Utils {
         pwDockerignore.close
     }
     
+    // Implicit return
+    // In pure functional languages there is no return keyword
     path
-  }
-
-  private val buildImageCallback = new BuildImageResultCallback() {
-    override def onNext(item: BuildResponseItem) = {
-      val payload = item.getStream()
-      if (payload.contains("Successfully built")) {
-        imageIdHolder.synchronized {
-          imageIdHolder ++= payload.substring(19)
-          imageIdHolder.notifyAll()
-        }
-      }
-      synchronizedPrintln(s"BuildImageResultCallback: ${payload}")
-      super.onNext(item)
-    }
-  }
-
-  // We're using a Java API and Java unlike Scala is not functional,
-  // so the way it works is when you want a callback, you define an interface or abstract class
-  // and the consumer of the API overrides the function defined in the interface or abstract class
-  private class MyLogContainerResultCallback(snippetId: String) extends LogContainerResultCallback {
-    // Basically an efficient way to build a String
-    val log = new StringBuilder()
-
-    // We get the payload from the frame
-    // If the payload contains alphanumeric chars
-    // and doesn't have /usr/src/app or node in it
-    // we add the payload to the log and
-    // we send the log to Firestore
-    // in snippetOutputs
-    //
-    // This is ONLY giving us the output from the
-    // container
-    override def onNext(frame: Frame): Unit = {
-      if (snippetIdToContainerId.contains(snippetId)) {
-        val payload = new String(frame.getPayload())
-        if (!payload.contains("/usr/src/app") && !payload.contains("node") && !payload.contains("defaultName") && !payload.trim().isEmpty()) {
-          // I'm synchronizing on the log because the
-          // Java Virtual Machine has a happens-before relationship
-          // that guarantees that if I synchronize on something and
-          // it was synchronized before and written on, I will see
-          // that write in memory; I was taught to think of it
-          // as a cache flush where all CPUs flush their caches
-          log.synchronized {
-            log ++= payload 
-            log ++= "\n"
-          }
-
-          Future {
-            blocking {
-              log.synchronized {
-                db.collection("snippetOutputs").document(snippetId).set(Map[String, Object]("output" -> log.toString()).asJava)
-              }
-            }
-          } onComplete {
-            case Success(_) =>
-              synchronizedPrintln(s"Updated output for snippet $snippetId.")
-            case Failure(_) =>
-              synchronizedPrintln(s"Failed to update output for snippet $snippetId.")
-          }
-        }
-
-        synchronizedPrintln("Payload: " + payload)
-        super.onNext(frame)
-      }
-    }
-
-    override def toString(): String = {
-      log.synchronized {
-        log.toString()
-      }
-    }
-  }
-
-  private val waitContainerResultCallback = new WaitContainerResultCallback() {
-    override def onNext(waitResponse: WaitResponse) = {
-      synchronizedPrintln("Wait response: " + waitResponse.toString())
-    }
   }
 
   def createImage(snippetId: String, indexJSContents: String): String = {
@@ -203,19 +148,22 @@ object Utils {
     // tasks it takes off the queue; it basically allows reuse of
     // threads because thread creation is very expensive
     blocking {
+      // Clear the imageId since we're making a new image
       imageIdHolder.synchronized {
         imageIdHolder.clear()
       }
 
       val path = writeTemporaryDirectory(snippetId, DockerImageContents(indexJSContents))
-      //val baseDir = new java.io.File(s"/tmp/docker-$snippetId/")
-      val baseDir = new java.io.File(path)
-      // Tell Docker to build the actual image
-      imageId = dockerClient.buildImageCmd(baseDir).exec(buildImageCallback).awaitImageId()
+      // File is basically a representation of a path or file
+      val baseDir = new File(path)
+      // Tell Docker to build the actual image based on the given path
+      dockerClient.buildImageCmd(baseDir).exec(buildImageCallback).awaitImageId()
 
       // So here we're doing some special stuff
       // We're grabbing the image name off the output from building the image
       // This syntax is very common in what's called the producer-consumer problem
+      //
+      // https://en.wikipedia.org/wiki/Producer%E2%80%93consumer_problem
       imageIdHolder.synchronized {
         while (imageIdHolder.isEmpty) {
           imageIdHolder.wait()
@@ -231,6 +179,8 @@ object Utils {
   }
   
   def removeContainer(snippetId: String, containerId: String) = {
+    // As stated in another file, Try is just a way to deal with Java's exceptions
+    // in a more functional way using pattern matching
     Try(dockerClient.removeContainerCmd(containerId).withForce(true).exec()) match {
       case Success(_) => 
         // Remove snippetId->container from hashtable
@@ -248,16 +198,17 @@ object Utils {
       .withCmd("npm", "start")
       .exec()
     
+    // Get the container ID
     val containerId = container.getId()
 
     // Add snippetId -> containerId to hashtable
     snippetIdToContainerId.put(snippetId, containerId)
 
-    // Separate task to kill container
+    // Create a separate task to kill container
     Future {
       blocking {
         synchronizedPrintln("Starting sleep for kill")
-        // Wait for 4 seconds
+        // Wait for 10 seconds
         Thread.sleep(10 * 1000)
         synchronizedPrintln("Starting kill")
         // Forcefully remove the container
@@ -284,6 +235,12 @@ object Utils {
     dockerClient.startContainerCmd(containerId).exec()
 
     // Log the container's output
+    // The really important thing here is
+    // the MyLogContainerResultCallback
+    //
+    // So basically it will call that callback
+    // when it gets information from Docker
+    // about the container
     blocking {
       dockerClient.logContainerCmd(containerId)
         .withStdErr(true)
@@ -298,7 +255,6 @@ object Utils {
     // Execute this callback when container ends
     dockerClient.waitContainerCmd(containerId).exec(waitContainerResultCallback)
   }
-
 
   def setRunningFalseFuture(snippetId: String) = {
     Future {
@@ -337,8 +293,7 @@ object Utils {
           println(s"Error: $err")
         }
 
-        // Here we set the output to the error in Firestore
-        // in a new task
+        // Here we set the output to the error in Firestore in a new task
         // I'm creating a new task because this operation takes time
         // (think async operation)
         Future {
@@ -354,63 +309,7 @@ object Utils {
     }
   }
 
-  val querySnapshotCallback =
-    (doc: QueryDocumentSnapshot) => {
-      val snippetId = doc.getId()
-      synchronizedPrintln(s"snippetId: ${snippetId}")
-      // Assuming a snippet has some text
-      // Check if we've seen this snippet before
-      // If so, remove the container
-      // Either way, create the image first and then run container
-      synchronizedPrintln(s"Option(doc.get(text)): ${Option(doc.get("text"))}")
-      Option(doc.get("text")).foreach(indexJSContents => {
-        synchronizedPrintln(s"Got text: ${indexJSContents}")
-        // So concurrent.Map.get() returns an Option so I have to do something to get the value
-        // Option.getOrElse() is one of the things I can do to get the value
-        val containerIdOpt: Option[String] = snippetIdToContainerId.get(snippetId)
-        if (!containerIdOpt.isEmpty) {
-          val containerId: String = containerIdOpt.getOrElse(null)
-          Try(dockerClient.removeContainerCmd(containerId).withForce(true).exec()) match {
-            case Success(_) =>
-              synchronizedPrintln(s"Successfully removed container $containerId")
-            case Failure(_) =>
-              synchronizedPrintln(s"Failed to remove container $containerId")
-          }
-        }
-
-        createImageAndRunContainer(snippetId, indexJSContents.toString)
-      })
-    }
-
-  // Lot of code here for the event listener callback
-  // But basically it's mostly error handling
-  val eventListenerCallback =
-    new EventListener[QuerySnapshot]() {
-      override def onEvent(snapshots: QuerySnapshot, e: FirestoreException) = {
-        // Option is a special type in Scala
-        // It is a 1-element collection which
-        // means that foreach, map, etc. work
-        // And they only do anything if there's
-        // some value
-        //
-        // Option(null) == None
-        // Option(5) == Some(5)
-        Option(e) match {
-          case Some(e) =>
-            System.err.synchronized {
-              System.err.println(s"Listen failed: $e")
-            }
-          case None =>
-            synchronizedPrintln(s"Received query snapshot of size ${snapshots.size}");
-            snapshots.forEach(new Consumer[QueryDocumentSnapshot]() {
-              override def accept(arg: QueryDocumentSnapshot) = {
-                querySnapshotCallback.apply(arg)
-              }
-            })
-        }
-      }
-    }
-
+  // Subscribe to Firestore
   def snippetsSubscribe() = {
       listenerRegistration = db.collection("snippets").whereEqualTo("running", true)
         .addSnapshotListener(eventListenerCallback)
