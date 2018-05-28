@@ -8,44 +8,56 @@ import java.io.File
 import scala.collection.mutable.{ListBuffer, StringBuilder}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.{Future, Await}
+import scala.concurrent.duration.Duration
 
-import javax.servlet.http.HttpServletRequest
-import javax.servlet.http.HttpServletResponse
-import javax.servlet.ServletException
- 
-import org.eclipse.jetty.server.Server
-import org.eclipse.jetty.server.Request
-import org.eclipse.jetty.server.handler.AbstractHandler
- 
+import scala.util.{Try, Success, Failure}
+
+import akka.actor.{ ActorRef, ActorSystem }
+import akka.http.scaladsl.Http
+import akka.http.scaladsl.model.{StatusCodes, HttpEntity, ContentTypes}
+import akka.http.scaladsl.server.{Directives, ExceptionHandler, RejectionHandler, Route}
+import akka.stream.ActorMaterializer
+
+import ch.megard.akka.http.cors.scaladsl.CorsDirectives._
+import Directives._
+
 // object declares a singleton class
 object DockerMain {
   // Just an object
   val lock = new AnyRef
   val flag: Boolean = false
-  var serverOpt: Option[Server] = None
 
+  def route: Route = {
+    // Your CORS settings are loaded from `application.conf`
 
-  def jettyServer(): Unit = {
-    Future {
-      val handler = new AbstractHandler() {
-        override def handle(target: String, baseRequest: Request, request: HttpServletRequest, response: HttpServletResponse) {
-          response.setContentType("text/html;charset=utf-8")
-          response.setStatus(HttpServletResponse.SC_OK)
-          baseRequest.setHandled(true)
-          response.getWriter().println("<h1>Hello World</h1>")
+    // Your rejection handler
+    val rejectionHandler = corsRejectionHandler withFallback RejectionHandler.default
+
+    // Your exception handler
+    val exceptionHandler = ExceptionHandler {
+      case e: NoSuchElementException => complete(StatusCodes.NotFound -> e.getMessage)
+    }
+
+    // Combining the two handlers only for convenience
+    val handleErrors = handleRejections(rejectionHandler) & handleExceptions(exceptionHandler)
+
+    // Note how rejections and exceptions are handled *before* the CORS directive (in the inner route).
+    // This is required to have the correct CORS headers in the response even when an error occurs.
+    handleErrors {
+      cors() {
+        handleErrors {
+          pathSingleSlash {
+              complete(HttpEntity(ContentTypes.`text/html(UTF-8)`,
+                 "<html><body>Hello world!</body></html>"))
+          } ~
+          path("ping") {
+            complete("pong")
+          } ~
+          path("pong") {
+            failWith(new NoSuchElementException("pong not found, try with ping"))
+          }
         }
       }
-
-      val port = if(System.getenv("PORT") != null) System.getenv("PORT").toInt else 8080
-      serverOpt = Some(new Server(port))
-
-      serverOpt.foreach(server => {
-        server.setHandler(handler)
-
-        synchronizedPrintln("Starting HTTP server...")
-        server.start()
-        server.join()
-      })
     }
   }
 
@@ -53,8 +65,6 @@ object DockerMain {
     // On shutdown
     scala.sys.addShutdownHook {
       synchronizedPrintln("Stopping HTTP server...")
-      // Stop the HTTP server
-      serverOpt.foreach(server => server.stop())
 
       synchronizedPrintln("Removing all containers...")
       // Forcefully remove all the containers still in the hashtable
@@ -64,8 +74,32 @@ object DockerMain {
       snippetIdToContainerId.foreach({ case (snippetId, containerId) => removeContainer(snippetId, containerId) })
     }
 
-    jettyServer()
     snippetsSubscribe()
+
+    // set up ActorSystem and other dependencies here
+    //#main-class
+    //#server-bootstrapping
+    implicit val system: ActorSystem = ActorSystem("ScalaDockerClientAkkaHttpServer")
+    implicit val materializer: ActorMaterializer = ActorMaterializer()
+    //#server-bootstrapping
+
+    //#main-class
+    // from the UserRoutes trait
+    //#main-class
+
+    lazy val port = Try(sys.env("PORT")) match {
+      case Success(portNum) => portNum.toInt
+      case Failure(_) => 8080
+    }
+
+    //#http-server
+    Http().bindAndHandle(route, "localhost", port)
+
+    println(s"Server online at http://localhost:8080/")
+
+    Await.result(system.whenTerminated, Duration.Inf)
+    //#http-server
+    //#main-class
 
     // Every object in Java has what's called an intrinsic lock or monitor lock
     // So you call synchronized on that lock

@@ -34,6 +34,8 @@ libraryDependencies ++= Seq(
   "io.grpc" % "grpc-netty" % "1.12.0",
   "io.grpc" % "grpc-okhttp" % "1.12.0",
 
+  "ch.megard" %% "akka-http-cors" % "0.3.0",
+
   "com.typesafe.akka" %% "akka-http"            % akkaHttpVersion,
   "com.typesafe.akka" %% "akka-http-spray-json" % akkaHttpVersion,
   "com.typesafe.akka" %% "akka-http-xml"        % akkaHttpVersion,
