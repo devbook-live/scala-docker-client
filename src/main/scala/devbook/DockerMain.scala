@@ -48,7 +48,7 @@ object DockerMain {
         handleErrors {
           pathSingleSlash {
               complete(HttpEntity(ContentTypes.`text/html(UTF-8)`,
-                 "<html><body>Hello world!</body></html>"))
+                 "Hello World!"))
           } ~
           path("ping") {
             complete("pong")
@@ -93,9 +93,9 @@ object DockerMain {
     }
 
     //#http-server
-    Http().bindAndHandle(route, "localhost", port)
+    Http().bindAndHandle(route, "0.0.0.0", port)
 
-    println(s"Server online at http://localhost:8080/")
+    println(s"Server online at http://0.0.0.0:${port}/")
 
     Await.result(system.whenTerminated, Duration.Inf)
     //#http-server
