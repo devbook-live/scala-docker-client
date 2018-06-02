@@ -10,6 +10,8 @@ object FirebaseService {
   private val serviceAccountPath = System.getProperty("user.dir") + "/serviceAccountKey.json"
   private val serviceAccountFile = new File(serviceAccountPath)
 
+  // If the serviceAccountKey.json file doesn't exist in the current directory
+  // fetch it from the environment and then write it out to serviceAccountKey.json
   if (!serviceAccountFile.exists()) {
     val credentialsContents = sys.env("GOOGLE_APPLICATION_CREDENTIALS")
     val printWriter = new PrintWriter(serviceAccountPath)
@@ -18,6 +20,7 @@ object FirebaseService {
     printWriter.close
   }
 
+  // Load OAuth credentials from serviceAccountKey.json
   private val serviceAccount = new FileInputStream(serviceAccountPath)
   private val credentials = GoogleCredentials.fromStream(serviceAccount)
   private val options = new FirebaseOptions.Builder()

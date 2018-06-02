@@ -79,6 +79,8 @@ object DockerContext {
           None
       }
 
+    // Make sure none of the environment variables were empty
+    // Then just write them all out
     if (!ca_contents.isEmpty && !cert_contents.isEmpty && !key_contents.isEmpty) {
       val currWorkDir = System.getProperty("user.dir")
 
@@ -98,10 +100,12 @@ object DockerContext {
       if (printWriter.checkError()) throw new IOException()
       printWriter.close
 
+      // Give the configuration builder the path for the security certificates
       configBuilder = configBuilder.withDockerCertPath(s"$currWorkDir/.docker")
     }
   }
 
+  // Actually build the configuration
   val config = configBuilder.build()
 
   // Create an instance of the Java DockerClient
