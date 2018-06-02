@@ -5,17 +5,17 @@ import DevBook.FirebaseService.db
 
 import java.io.File
 
-import scala.collection.mutable.{ListBuffer, StringBuilder}
+import scala.collection.mutable.{ ListBuffer, StringBuilder }
 import scala.concurrent.ExecutionContext.Implicits.global
-import scala.concurrent.{Future, Await}
+import scala.concurrent.{ Future, Await }
 import scala.concurrent.duration.Duration
 
-import scala.util.{Try, Success, Failure}
+import scala.util.{ Try, Success, Failure }
 
 import akka.actor.{ ActorRef, ActorSystem }
 import akka.http.scaladsl.Http
-import akka.http.scaladsl.model.{StatusCodes, HttpEntity, ContentTypes}
-import akka.http.scaladsl.server.{Directives, ExceptionHandler, RejectionHandler, Route}
+import akka.http.scaladsl.model.{ StatusCodes, HttpEntity, ContentTypes }
+import akka.http.scaladsl.server.{ Directives, ExceptionHandler, RejectionHandler, Route }
 import akka.stream.ActorMaterializer
 
 import ch.megard.akka.http.cors.scaladsl.CorsDirectives._

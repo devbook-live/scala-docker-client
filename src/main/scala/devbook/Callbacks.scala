@@ -2,19 +2,19 @@ package DevBook
 
 import DevBook.FirebaseService.db
 import DevBook.DockerContext.dockerClient
-import DevBook.Utils.{imageIdHolder, snippetIdToContainerId, synchronizedPrintln, createImageAndRunContainer}
+import DevBook.Utils.{ imageIdHolder, snippetIdToContainerId, synchronizedPrintln, createImageAndRunContainer }
 
 import java.util.function.Consumer
 
-import scala.util.{Try, Success, Failure}
+import scala.util.{ Try, Success, Failure }
 import scala.collection.JavaConverters._
-import scala.concurrent.{Future, Await, blocking}
+import scala.concurrent.{ Future, Await, blocking }
 import scala.concurrent.ExecutionContext.Implicits.global
 
-import com.github.dockerjava.api.model.{WaitResponse, BuildResponseItem, Event, Frame}
-import com.github.dockerjava.core.command.{BuildImageResultCallback, WaitContainerResultCallback, EventsResultCallback, LogContainerResultCallback} 
+import com.github.dockerjava.api.model.{ WaitResponse, BuildResponseItem, Event, Frame }
+import com.github.dockerjava.core.command.{ BuildImageResultCallback, WaitContainerResultCallback, EventsResultCallback, LogContainerResultCallback } 
 
-import com.google.cloud.firestore.{ListenerRegistration, EventListener, FirestoreException, QuerySnapshot, QueryDocumentSnapshot}
+import com.google.cloud.firestore.{ ListenerRegistration, EventListener, FirestoreException, QuerySnapshot, QueryDocumentSnapshot }
 
 object Callbacks {
   // This callback runs when the image is built

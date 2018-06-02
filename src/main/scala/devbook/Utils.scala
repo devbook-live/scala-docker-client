@@ -8,17 +8,17 @@ import java.io._
 import java.util.concurrent.ConcurrentHashMap
 
 import scala.collection.JavaConverters._
-import scala.collection.concurrent.{Map => ConcurrentMap}
-import scala.collection.mutable.{ListBuffer, StringBuilder}
+import scala.collection.concurrent.{ Map => ConcurrentMap }
+import scala.collection.mutable.{ ListBuffer, StringBuilder }
 
-import scala.concurrent.{Future, Await, blocking}
+import scala.concurrent.{ Future, Await, blocking }
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration._
 
-import scala.util.{Try, Success, Failure}
+import scala.util.{ Try, Success, Failure }
 import scala.language.postfixOps
 
-import com.google.cloud.firestore.{ListenerRegistration, EventListener, FirestoreException, QuerySnapshot, QueryDocumentSnapshot}
+import com.google.cloud.firestore.{ ListenerRegistration, EventListener, FirestoreException, QuerySnapshot, QueryDocumentSnapshot }
 
 object Utils {
   // Thread-safe hashtable that maps from snippetId -> containerId
